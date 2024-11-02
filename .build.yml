@@ -1,0 +1,70 @@
+image: archlinux
+packages:
+    - go
+    - mercurial
+    - zstd
+    - gnupg
+    - libx11
+    - libxkbcommon
+    - libxkbcommon-x11
+    - libxtst
+    - libpng
+    - multilib-devel
+    - mingw-w64-toolchain
+    - mingw-w64-zlib
+sources: 
+    - hg+https://hg.sr.ht/~ser/quasiauto
+secrets:
+    - 45926939-38b0-4e7f-bfa5-1a5b5786a773
+    - d7d86c19-5b94-4c65-bf07-b8b30f55bd63
+environment:
+    PROJ: quasiauto
+    TARGET: quasiauto
+    SOURCE: ./cmd/quasiauto
+    TARGETS: linux:amd64 windows:amd64
+tasks:
+    - test: |
+        cd ${PROJ}
+        go test -cover -bench=. .
+    - build: |
+        cd ${PROJ}
+        export VERSION=`hg log -r tip --template '{bookmarks}'`
+        [[ $VERSION == "" ]] && VERSION=dev
+        export BUILDDATE=`date +%Y-%m-%dT%H%M%S`
+        for T in ${TARGETS}; do
+            unset CGO_ENABLED CC CXX
+            export LDFLAGS="-s -w"
+            export GOOS=$(echo $T | cut -d: -f1)
+            export GOARCH=$(echo $T | cut -d: -f2)
+            export GOARM=$(echo $T | cut -d: -f3)
+            export ASSET=${PROJ}-${GOOS}-${GOARCH}${GOARM}-${VERSION}
+            [[ -z $GOARM ]] && unset GOARM
+            if [[ $GOOS == "windows" ]]; then
+                ASSET=${ASSET}.exe
+                export CGO_ENABLED=1
+                export CC=x86_64-w64-mingw32-gcc
+                export CXX=x86_64-w64-mingw32-g++ GOOS=windows
+                export GOARCH=amd64
+                LDFLAGS=""
+            fi
+            go build -ldflags "-X main.Version=${VERSION} -X main.BuildDate=${BUILDDATE} $LDFLAGS" -v -o ${ASSET} ${SOURCE}
+        done
+    - upload: |
+        cd ${PROJ}
+        export VERSION=`hg log -r tip --template '{bookmarks}'`
+        [[ $VERSION == "" ]] && exit
+        export PROJURL="https://downloads.ser1.net/files/${PROJ}/"
+        [[ $(curl -s --netrc-file ~/.downloads -X PROPFIND $PROJURL) == "Not Found" ]] && curl --netrc-file ~/.downloads -X MKCOL ${PROJURL}
+        for T in ${TARGETS}; do
+            export GOOS=$(echo $T | cut -d: -f1)
+            export GOARCH=$(echo $T | cut -d: -f2)
+            export ASSET=${PROJ}-${GOOS}-${GOARCH}-${VERSION}
+            export LATEST=${PROJ}-${GOOS}-${GOARCH}-latest
+            [[ $GOOS == "windows" ]] && ASSET=${ASSET}.exe
+            zstd ${ASSET}
+            gpg -b --local-user ECE3F91E646A3FAB5D4DED0F5E0D7ABD6668FDD1 ${ASSET}.zst
+            curl --netrc-file ~/.downloads -T ${ASSET}.zst ${PROJURL}
+            curl --netrc-file ~/.downloads -T ${ASSET}.zst.sig ${PROJURL}
+            curl --netrc-file ~/.downloads -T ${ASSET}.zst ${PROJURL}${LATEST}.zst
+            curl --netrc-file ~/.downloads -T ${ASSET}.zst.sig ${PROJURL}${LATEST}.zst.sig
+        done
